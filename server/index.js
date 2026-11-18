@@ -610,6 +610,8 @@ const auth = roles => (req, res, next) => {
   single arrival threshold used for both pickup-stop arrival and destination arrival.
 */
 const ARRIVAL_THRESHOLD_METERS = 20;
+// Existing timetable planner estimate, used only when live road routing and GPS speed are unavailable.
+const ETA_MINUTES_PER_STOP = 7;
 
 /*
   Boarding detection: the passenger is treated as riding a bus only after the passenger's GPS
@@ -686,7 +688,7 @@ function findOptions(from, to) {
             type: 'direct',
             route,
             bus: [...buses.values()].find(bus => bus.routeId === route.id),
-            durationMin: (end - start) * 7
+            durationMin: (end - start) * ETA_MINUTES_PER_STOP
           }
         ]
       : [];
@@ -1727,10 +1729,10 @@ async function buildArrival(bus, pickupStop, trackers) {
 
   // Live road route from the bus to the pickup stop (skipped once arrived).
   let road = null;
+  let progressIndex = -1;
   if (!hasArrived && stopIndex >= 0) {
     // Follow the bus's ordered route. Routing straight to the pickup stop can send Google back
     // along the road when the bus has already passed it, yielding a plausible but false ETA.
-    let progressIndex = -1;
     let nearestMeters = Infinity;
     for (let i = 0; i < stops.length; i += 1) {
       const meters = gpsDistance(stops[i], bus);
@@ -1759,7 +1761,11 @@ async function buildArrival(bus, pickupStop, trackers) {
 
   const speedKmh = Number.isFinite(bus.speedKmh) ? bus.speedKmh : null;
   const roadDistanceMeters = road && Number.isFinite(road.distanceMeters) ? road.distanceMeters : null;
-  const etaMinutes = hasArrived ? 0 : etaMinutesFromRoute(road, speedKmh);
+  const roadEtaMinutes = etaMinutesFromRoute(road, speedKmh);
+  const timetableEtaMinutes = !hasArrived && progressIndex >= 0 && progressIndex <= stopIndex
+    ? Math.max(1, (stopIndex - progressIndex) * ETA_MINUTES_PER_STOP)
+    : null;
+  const etaMinutes = hasArrived ? 0 : roadEtaMinutes ?? timetableEtaMinutes;
 
   let etaSource = null;
   let etaStatus = 'unavailable';
@@ -1767,7 +1773,11 @@ async function buildArrival(bus, pickupStop, trackers) {
     etaSource = 'gps-arrival';
     etaStatus = 'arrived';
   } else if (etaMinutes !== null) {
-    etaSource = Number.isFinite(road?.durationSeconds) ? 'google-road' : 'road-distance-speed';
+    etaSource = Number.isFinite(road?.durationSeconds)
+      ? 'google-road'
+      : roadEtaMinutes !== null
+        ? 'road-distance-speed'
+        : 'timetable-estimate';
     etaStatus = 'ok';
   }
 
@@ -1778,6 +1788,7 @@ async function buildArrival(bus, pickupStop, trackers) {
     routeName: route?.name || bus.routeName || null,
     etaMinutes,
     etaSource,
+    etaApproximate: etaSource === 'timetable-estimate',
     etaStatus,
     // Road distance only; once arrived there is nothing left to show.
     distanceMeters: hasArrived ? null : roadDistanceMeters,
