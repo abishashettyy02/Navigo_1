@@ -1727,11 +1727,33 @@ async function buildArrival(bus, pickupStop, trackers) {
 
   // Live road route from the bus to the pickup stop (skipped once arrived).
   let road = null;
-  if (!hasArrived) {
-    try {
-      road = await cachedRoute(`arrival:${bus.id}>${pickupStop.id}`, positionFingerprint(bus), ROUTE_TTL_MS, () => routeToLocation(bus, pickupStop));
-    } catch (error) {
-      console.error(`ETA calculation failed for bus ${bus.id}:`, error?.message || error);
+  if (!hasArrived && stopIndex >= 0) {
+    // Follow the bus's ordered route. Routing straight to the pickup stop can send Google back
+    // along the road when the bus has already passed it, yielding a plausible but false ETA.
+    let progressIndex = -1;
+    let nearestMeters = Infinity;
+    for (let i = 0; i < stops.length; i += 1) {
+      const meters = gpsDistance(stops[i], bus);
+      if (meters !== null && meters < nearestMeters) {
+        nearestMeters = meters;
+        progressIndex = i;
+      }
+    }
+
+    // If the nearest point on the bus route is already beyond this stop, the bus has passed it.
+    if (progressIndex < 0 || progressIndex <= stopIndex) {
+      const remainingStops = progressIndex >= 0 ? stops.slice(progressIndex + 1, stopIndex) : stops.slice(0, stopIndex);
+      const waypointKey = remainingStops.map(stop => stop.id).join(',');
+      try {
+        road = await cachedRoute(
+          `arrival:${bus.id}>${pickupStop.id}`,
+          `${positionFingerprint(bus)}|${waypointKey}`,
+          ROUTE_TTL_MS,
+          () => routeToLocation(bus, pickupStop, remainingStops)
+        );
+      } catch (error) {
+        console.error(`ETA calculation failed for bus ${bus.id}:`, error?.message || error);
+      }
     }
   }
 
