@@ -2189,10 +2189,14 @@ io.on('connection', socket => socket.emit('buses:initial', [...buses.values()]))
    PRODUCTION FRONTEND
 ========================= */
 
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(projectRoot, 'dist')));
+const frontendPath = path.join(projectRoot, 'dist');
+const frontendEntry = path.join(frontendPath, 'index.html');
+if (fs.existsSync(frontendEntry)) {
+  app.use(express.static(frontendPath));
 
-  app.get('*', (req, res) => res.sendFile(path.join(projectRoot, 'dist', 'index.html')));
+  // Serve the client routes whenever a build is present. This keeps the root page working
+  // on hosts that run the server without setting NODE_ENV=production explicitly.
+  app.get('*', (req, res) => res.sendFile(frontendEntry));
 }
 
 /* =========================
